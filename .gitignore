@@ -1,0 +1,33 @@
+# ===== Large data =====
+
+scaling_finetuning-main/Data/
+scaling_finetuning-main/model_attention/
+
+# Results
+scaling_finetuning-main/Results/
+scaling_finetuning-main/4_Results*/
+scaling_finetuning-main/check_*/
+
+# Analysis large outputs
+scaling_finetuning-main/Analysis/
+
+# fMRI
+*.nii
+*.nii.gz
+
+# Python
+__pycache__/
+*.pyc
+
+# Logs
+*.log
+logs/
+
+# Environment
+.conda/
+.env
+
+# Temporary
+*.tmp
+
+*.pdf
