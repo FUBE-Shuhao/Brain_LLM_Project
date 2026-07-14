@@ -253,6 +253,59 @@ check_attention_file() {
   [ -f "$f" ] || die "Missing attention file: $f"
 }
 
+format_duration() {
+  local seconds="${1:-0}"
+  if [ "$seconds" = "unknown" ] || [ -z "$seconds" ]; then
+    printf "unknown"
+    return
+  fi
+
+  seconds=$((seconds < 0 ? 0 : seconds))
+  local hours=$((seconds / 3600))
+  local minutes=$(((seconds % 3600) / 60))
+  local secs=$((seconds % 60))
+
+  if ((hours > 0)); then
+    printf "%d:%02d:%02d" "$hours" "$minutes" "$secs"
+  else
+    printf "%02d:%02d" "$minutes" "$secs"
+  fi
+}
+
+render_overall_progress() {
+  local finished="$1"
+  local total="$2"
+  local started_at="$3"
+  local completed_runs="$4"
+  local completed_seconds="$5"
+  local current="$6"
+  local width=34
+  local now elapsed pct filled empty bar eta avg
+
+  now="$(date +%s)"
+  elapsed=$((now - started_at))
+
+  if ((total > 0)); then
+    pct="$(awk -v f="$finished" -v t="$total" 'BEGIN { printf "%.1f", 100*f/t }')"
+    filled="$(awk -v f="$finished" -v t="$total" -v w="$width" 'BEGIN { printf "%d", (t ? int(w*f/t) : w) }')"
+  else
+    pct="100.0"
+    filled="$width"
+  fi
+  empty=$((width - filled))
+  bar="$(printf "%${filled}s" "" | tr ' ' '#')$(printf "%${empty}s" "" | tr ' ' '-')"
+
+  if ((completed_runs > 0)); then
+    avg="$(awk -v s="$completed_seconds" -v n="$completed_runs" 'BEGIN { printf "%.0f", s/n }')"
+    eta=$((avg * (total - finished)))
+  else
+    eta="unknown"
+  fi
+
+  echo "Overall: [$bar] ${finished}/${total} (${pct}%) elapsed $(format_duration "$elapsed") ETA $(format_duration "$eta")"
+  echo "Current: $current"
+}
+
 echo "============================================================"
 echo "Interactive fMRI ridge regression launcher"
 echo "Project       : $PROJECT"
@@ -429,6 +482,10 @@ if [ "$DRY_RUN" = "yes" ]; then
 fi
 
 JOB_INDEX=0
+FINISHED_TASKS=0
+COMPLETED_RUNS=0
+COMPLETED_RUN_SECONDS=0
+OVERALL_STARTED_AT="$(date +%s)"
 for id in "${SUBJECTS[@]}"; do
   if contains_number "$id" "${EXCLUDED[@]}"; then
     echo "Skipping subject $id according to exclusion list."
@@ -447,9 +504,12 @@ for id in "${SUBJECTS[@]}"; do
 
           if [ "$OVERWRITE" = "no" ] && [ -s "$out_file" ]; then
             echo "[$JOB_INDEX/$TASK_COUNT] SKIP existing: $out_file"
+            FINISHED_TASKS=$((FINISHED_TASKS + 1))
+            render_overall_progress "$FINISHED_TASKS" "$TASK_COUNT" "$OVERALL_STARTED_AT" "$COMPLETED_RUNS" "$COMPLETED_RUN_SECONDS" "skipped subj=$id model=${MODEL}_${size} group=$group hem=$hem layer=$layer"
             continue
           fi
 
+          render_overall_progress "$FINISHED_TASKS" "$TASK_COUNT" "$OVERALL_STARTED_AT" "$COMPLETED_RUNS" "$COMPLETED_RUN_SECONDS" "starting subj=$id model=${MODEL}_${size} group=$group hem=$hem layer=$layer"
           echo "[$JOB_INDEX/$TASK_COUNT] subj=$id model=${MODEL}_${size} group=$group hem=$hem layer=$layer"
           echo "  Output: $out_file"
           echo "  Log   : $log_file"
@@ -459,16 +519,28 @@ for id in "${SUBJECTS[@]}"; do
           fi
 
           mkdir -p "$log_dir"
-          PROJECT_DIR="$PROJECT" \
-          DATA_DIR="${PROJECT}/Data" \
-          ATTN_DIR="${PROJECT}/model_attention" \
-          OUTPUT_ROOT="$RESULT_ROOT" \
-          N_JOBS="$N_JOBS" \
-            "$PY" "$SCRIPT" "$id" "$group" "$MODEL" "$size" "$hem" "$layer" 2>&1 | tee "$log_file"
+          task_started_at="$(date +%s)"
+          if PROJECT_DIR="$PROJECT" \
+            DATA_DIR="${PROJECT}/Data" \
+            ATTN_DIR="${PROJECT}/model_attention" \
+            OUTPUT_ROOT="$RESULT_ROOT" \
+            N_JOBS="$N_JOBS" \
+              "$PY" "$SCRIPT" "$id" "$group" "$MODEL" "$size" "$hem" "$layer" 2>&1 | tee "$log_file"; then
+            task_elapsed=$(($(date +%s) - task_started_at))
+            FINISHED_TASKS=$((FINISHED_TASKS + 1))
+            COMPLETED_RUNS=$((COMPLETED_RUNS + 1))
+            COMPLETED_RUN_SECONDS=$((COMPLETED_RUN_SECONDS + task_elapsed))
+            render_overall_progress "$FINISHED_TASKS" "$TASK_COUNT" "$OVERALL_STARTED_AT" "$COMPLETED_RUNS" "$COMPLETED_RUN_SECONDS" "finished subj=$id model=${MODEL}_${size} group=$group hem=$hem layer=$layer in $(format_duration "$task_elapsed")"
+          else
+            echo "FAILED subj=$id model=${MODEL}_${size} group=$group hem=$hem layer=$layer"
+            echo "See log: $log_file"
+            exit 1
+          fi
         done
       done
     done
   done
 done
 
-echo "DONE. Finished planned interactive ridge-regression run."
+total_elapsed=$(($(date +%s) - OVERALL_STARTED_AT))
+echo "DONE. Finished planned interactive ridge-regression run in $(format_duration "$total_elapsed")."
